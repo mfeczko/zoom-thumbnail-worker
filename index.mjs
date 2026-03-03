@@ -139,8 +139,8 @@ async function downloadToFile(url, token, destPath) {
 async function makeThumbnailJpg(inputMp4, outputJpg) {
   await new Promise((resolve, reject) => {
     ffmpeg(inputMp4)
-      .seekInput(5)
-      .outputOptions(["-frames:v 1"])
+      .seekInput(600)
+      .outputOptions(["-frames:v 1", "-q:v 2",])
       .output(outputJpg)
       .on("end", resolve)
       .on("error", reject)
