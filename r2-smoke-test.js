@@ -6,6 +6,7 @@ const {
   R2_SECRET_ACCESS_KEY,
   R2_BUCKET,
 } = process.env;
+console.log("ENV DEBUG:", { R2_BUCKET, R2_ENDPOINT });
 
 if (!R2_ENDPOINT || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET) {
   throw new Error("Missing R2 env vars");
