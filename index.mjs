@@ -1,3 +1,5 @@
+console.log("🚀 THUMB WORKER VERSION = fromWeb+pipeline+safeId (v2) 2026-03-03");
+
 import ffmpegPath from "ffmpeg-static";
 import ffmpeg from "fluent-ffmpeg";
 import fs from "node:fs";
