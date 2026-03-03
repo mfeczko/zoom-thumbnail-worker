@@ -1,3 +1,9 @@
+console.log("✅ worker starting", new Date().toISOString());
+console.log("env present?", {
+  hasZoom: !!process.env.ZOOM_ACCOUNT_ID,
+  hasR2: !!process.env.R2_ENDPOINT,
+});
+
 import ffmpegPath from "ffmpeg-static";
 import ffmpeg from "fluent-ffmpeg";
 import fs from "fs";
