@@ -206,7 +206,7 @@ async function run() {
       console.log("✅ Uploaded", `${R2_PUBLIC_BASE}/${key}`);
 
       done++;
-      if (done >= 5) break; // keep runs small while testing
+      if (done >= 20) break; // keep runs small while testing
     } catch (e) {
       console.error("❌ Failed", { meetingId: meetingIdRaw, safeId: id, error: e?.message || e });
     } finally {
