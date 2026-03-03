@@ -139,8 +139,12 @@ async function downloadToFile(url, token, destPath) {
 async function makeThumbnailJpg(inputMp4, outputJpg) {
   await new Promise((resolve, reject) => {
     ffmpeg(inputMp4)
-      .seekInput(600)
-      .outputOptions(["-frames:v 1", "-q:v 2",])
+      .seekInput(600) // 10 minutes
+      .outputOptions([
+        "-frames:v 1",
+        "-vf scale=1280:-2",   // <-- bigger thumbnail (keeps aspect ratio)
+        "-q:v 3"               // JPEG quality (lower = better). Try 2-4.
+      ])
       .output(outputJpg)
       .on("end", resolve)
       .on("error", reject)
