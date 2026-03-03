@@ -6,7 +6,7 @@
     "@supabase/supabase-js": "^2.39.0",
     "ffmpeg-static": "^5.2.0",
     "fluent-ffmpeg": "^2.1.2",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
     "@aws-sdk/client-s3": "^3.540.0"
   }
 }  
