@@ -1,79 +1,82 @@
 import { chromium } from 'playwright';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-import fs from 'fs';
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import fs from "node:fs";
 
-// 1. Configure Cloudflare R2 (Using your existing environment variables)
+// 1. Setup R2 using your existing Zoom naming conventions
+const {
+  R2_ENDPOINT,
+  R2_ACCESS_KEY_ID,
+  R2_SECRET_ACCESS_KEY,
+  R2_BUCKET,
+  BOOKWHEN_EMAIL,
+  BOOKWHEN_PASSWORD
+} = process.env;
+
 const s3 = new S3Client({
-  region: 'auto',
-  endpoint: process.env.R2_ENDPOINT,
+  region: "auto",
+  endpoint: R2_ENDPOINT,
   credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID,
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    accessKeyId: R2_ACCESS_KEY_ID,
+    secretAccessKey: R2_SECRET_ACCESS_KEY,
   },
 });
 
 async function runScraper() {
-  console.log('🚀 Starting Bookwhen attendance export...');
+  console.log("🚀 Starting Bookwhen Export Pipeline...");
   
-  // Launch browser with downloads accepted
+  // Launch browser and allow downloads
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ acceptDownloads: true });
   const page = await context.newPage();
   
   try {
-    // 2. Log in to Bookwhen
-    console.log('🔑 Logging in...');
+    // 2. Login
+    console.log("🔑 Logging into Bookwhen...");
     await page.goto('https://bookwhen.com/login');
-    await page.fill('#user_email', process.env.BOOKWHEN_EMAIL); 
-    await page.fill('#user_password', process.env.BOOKWHEN_PASSWORD);
+    await page.fill('#user_email', BOOKWHEN_EMAIL); 
+    await page.fill('#user_password', BOOKWHEN_PASSWORD);
     await page.click('input[type="submit"]');
     await page.waitForNavigation();
 
-    // 3. Navigate to the Attendances page
-    console.log('📅 Navigating to bookings/attendances...');
+    // 3. Go to Attendances
+    console.log("📅 Navigating to Attendances...");
     await page.goto('https://lungesinleggings.bookwhen.com/attendances'); 
 
-    // 4. Trigger the Export
-    console.log('🖱️ Opening Options menu...');
+    // 4. Trigger Export
+    console.log("🖱️ Opening Options and Requesting CSV...");
     await page.click('button:has-text("Options")');
-    
-    console.log('📩 Requesting Attendance CSV...');
     await page.click('text="Export attendances (CSV)"');
 
-    // 5. Wait for the Processing Modal to finish
-    // Based on your screenshot, we wait for the "Download" button to become visible.
-    console.log('⏳ Waiting for Bookwhen to generate the report (up to 3 mins)...');
-    
-    // We use a broader locator to find the blue Download button in the modal
+    // 5. Wait for the "Download" button to appear in the modal
+    console.log("⏳ Waiting for report generation (up to 3 mins)...");
     const downloadButton = page.locator('a.btn-primary:has-text("Download")');
     
-    // Increased timeout to 3 minutes as requested
+    // This waits for the "Processing" modal to turn into the "Download" modal
     await downloadButton.waitFor({ state: 'visible', timeout: 180000 });
-    console.log('✅ Report ready!');
+    console.log("✅ Report ready!");
 
-    // 6. Handle the actual file download
+    // 6. Execute Download
     const [download] = await Promise.all([
       page.waitForEvent('download'),
       downloadButton.click()
     ]);
     
     const filePath = await download.path();
-    const fileStream = fs.createReadStream(filePath);
+    const fileBuffer = fs.readFileSync(filePath);
 
-    // 7. Upload the file to Cloudflare R2
-    console.log('☁️ Uploading to Cloudflare R2...');
-    const uploadParams = {
-      Bucket: process.env.R2_BUCKET_NAME,
+    // 7. Upload to R2 (naming it 'latest_attendance.csv')
+    console.log("☁️ Uploading to R2...");
+    await s3.send(new PutObjectCommand({
+      Bucket: R2_BUCKET,
       Key: 'latest_attendance.csv',
-      Body: fileStream,
+      Body: fileBuffer,
       ContentType: 'text/csv',
-    };
+    }));
 
-    await s3.send(new PutObjectCommand(uploadParams));
-    console.log('🎉 Success! latest_attendance.csv is now in R2.');
+    console.log("🎉 Success! File is now in R2.");
 
   } catch (error) {
-    console.error('❌ Scraper failed:', error);
+    console.error("❌ Pipeline Failed:", error.message);
     process.exit(1); 
   } finally {
     await browser.close();
