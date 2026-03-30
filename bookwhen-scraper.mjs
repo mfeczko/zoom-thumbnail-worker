@@ -1,9 +1,6 @@
-import { chromium } from 'playwright-extra';
-import stealth from 'puppeteer-extra-plugin-stealth';
+import { chromium } from 'playwright';
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import fs from "node:fs";
-
-chromium.use(stealth()); // 🛡️ Adds stealth to hide automation traces
 
 const {
   R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
@@ -17,42 +14,33 @@ const s3 = new S3Client({
 });
 
 async function runScraper() {
-  console.log("🚀 Starting Stealth Pipeline...");
+  console.log("🚀 Starting Surgical Pipeline...");
   const browser = await chromium.launch({ 
     headless: true, 
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] 
   });
   
-  // Set a realistic User Agent so we don't look like a script
-  const context = await browser.newContext({ 
-    acceptDownloads: true,
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-  });
+  const context = await browser.newContext({ acceptDownloads: true });
   const page = await context.newPage();
   
   try {
     console.log("🔑 Navigating to Login...");
-    await page.goto('https://bookwhen.com/login', { waitUntil: 'networkidle' });
+    // We go to the business login specifically
+    await page.goto('https://bookwhen.com/login', { waitUntil: 'domcontentloaded' });
 
-    // Wait for EITHER the email box OR a sign that we are blocked
-    console.log("🔎 Looking for login fields...");
-    try {
-        await page.waitForSelector('#user_email', { timeout: 15000 });
-    } catch (e) {
-        console.log("⚠️ Could not find login box. Taking a screenshot for debug...");
-        await page.screenshot({ path: '/tmp/error.png' });
-        // If we can't find it, the page might be showing a Cloudflare challenge
-        throw new Error("Login page didn't load correctly. Possible bot detection.");
-    }
+    console.log("🔎 Filling login form by labels...");
+    // Use 'getByLabel' or 'getByPlaceholder' which is more robust than IDs
+    await page.getByLabel(/Your email address/i).fill(BOOKWHEN_EMAIL);
+    await page.getByLabel(/Password/i).fill(BOOKWHEN_PASSWORD);
+    
+    // Click the green "Log in" button
+    await page.click('button:has-text("Log in")');
+    
+    await page.waitForNavigation({ waitUntil: 'networkidle' });
+    console.log("📅 Success! Logged in.");
 
-    await page.fill('#user_email', BOOKWHEN_EMAIL); 
-    await page.fill('#user_password', BOOKWHEN_PASSWORD);
-    await page.click('input[type="submit"]');
-    await page.waitForNavigation();
-
-    console.log("📅 Success! Logged in. Navigating to Attendances...");
-    await page.goto('https://lungesinleggings.bookwhen.com/attendances', { waitUntil: 'networkidle' }); 
-
+    // The rest of your export logic
+    await page.goto('https://lungesinleggings.bookwhen.com/attendances'); 
     await page.click('button:has-text("Options")');
     await page.click('text="Export attendances (CSV)"');
 
@@ -77,6 +65,9 @@ async function runScraper() {
 
   } catch (error) {
     console.error("❌ Pipeline Failed:", error.message);
+    // This is a pro-move: if it fails, we log the page content to see what went wrong
+    const content = await page.content();
+    console.log("HTML Preview of failure page:", content.slice(0, 500));
     process.exit(1); 
   } finally {
     await browser.close();
