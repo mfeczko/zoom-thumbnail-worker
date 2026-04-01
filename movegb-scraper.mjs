@@ -2,7 +2,7 @@ import { chromium } from "playwright";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-console.log("[movegb] VERSION 3 scraper starting");
+console.log("[movegb] VERSION 4 scraper starting");
 
 const MOVEGB_PIN = process.env.MOVEGB_PIN;
 const MOVEGB_RECEPTION_LOGIN_URL =
@@ -20,7 +20,7 @@ if (!MOVEGB_PIN || !/^\d{4}$/.test(MOVEGB_PIN)) {
 }
 
 function log(msg, data) {
-  if (data) console.log(`[movegb] ${msg}`, data);
+  if (data !== undefined) console.log(`[movegb] ${msg}`, data);
   else console.log(`[movegb] ${msg}`);
 }
 
@@ -63,24 +63,50 @@ async function wait(page, ms = 2000) {
   await page.waitForTimeout(ms);
 }
 
+function splitMember(value) {
+  if (!value) return { member_name: null, postcode: null };
+
+  const parts = value.split(",");
+  return {
+    member_name: parts[0]?.trim() || null,
+    postcode: parts.slice(1).join(",").trim() || null,
+  };
+}
+
 async function login(page) {
   log("Opening login page");
-  await page.goto(MOVEGB_RECEPTION_LOGIN_URL, { timeout: NAV_TIMEOUT });
+  await page.goto(MOVEGB_RECEPTION_LOGIN_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: NAV_TIMEOUT,
+  });
   await wait(page);
 
   await saveArtifacts(page, "01-login");
 
-  const input = page.locator("input").first();
-  await input.fill(MOVEGB_PIN);
+  log(`Login page input count: ${await page.locator("input").count()}`);
 
-  const submit = page.locator("button, input[type=submit]").first();
+  const pinCandidates = page.locator(
+    'input[name*="pin" i], input[id*="pin" i], input[inputmode="numeric"], input[type="password"], input[type="text"]'
+  );
+  log(`PIN candidate count: ${await pinCandidates.count()}`);
+
+  const input = pinCandidates.first();
+  await input.waitFor({ state: "visible", timeout: NAV_TIMEOUT });
+  await input.fill(MOVEGB_PIN);
+  log("Filled PIN");
+
+  const submit = page.locator(
+    '#login-button, button[type="submit"], input[type="submit"], button, input[value*="submit" i]'
+  ).first();
+
+  await submit.waitFor({ state: "visible", timeout: NAV_TIMEOUT });
 
   await Promise.all([
     page.waitForNavigation({ timeout: NAV_TIMEOUT }).catch(() => null),
     submit.click(),
   ]);
 
-  await wait(page);
+  await wait(page, 2500);
 
   log(`After login URL: ${page.url()}`);
   await saveArtifacts(page, "02-after-login");
@@ -88,37 +114,36 @@ async function login(page) {
 
 async function switchReception(page) {
   const url = `https://portal.movegb.com/business/switch-to-reception/${MOVEGB_RECEPTION_ID}`;
-  log("Switching reception");
+  log(`Switching reception to ${MOVEGB_RECEPTION_ID}`);
 
-  await page.goto(url, { timeout: NAV_TIMEOUT });
-  await wait(page);
+  await page.goto(url, {
+    waitUntil: "domcontentloaded",
+    timeout: NAV_TIMEOUT,
+  });
+  await wait(page, 2500);
 
   log(`After switch URL: ${page.url()}`);
   await saveArtifacts(page, "03-after-switch");
 }
 
-function splitMember(value) {
-  if (!value) return { member_name: null, postcode: null };
-
-  const parts = value.split(",");
-  return {
-    member_name: parts[0]?.trim() || null,
-    postcode: parts[1]?.trim() || null,
-  };
-}
-
 async function extractBookings(page, label, url) {
-  log(`Opening ${label}`);
-  await page.goto(url, { timeout: NAV_TIMEOUT });
+  log(`Opening ${label}: ${url}`);
+  await page.goto(url, {
+    waitUntil: "domcontentloaded",
+    timeout: NAV_TIMEOUT,
+  });
   await wait(page, 3000);
+
+  log(`${label}: current URL = ${page.url()}`);
+  log(`${label}: title = ${await page.title()}`);
 
   await saveArtifacts(page, label);
 
   const rows = page.locator(
     "div.col12.clearfix.pad1y.keyline-light-bottom.mobile-cols"
   );
-
   const count = await rows.count();
+
   log(`${label}: rows found = ${count}`);
 
   const bookings = [];
@@ -136,11 +161,11 @@ async function extractBookings(page, label, url) {
     const rightVals = [];
 
     for (let j = 0; j < leftCount; j++) {
-      leftVals.push(cleanText(await left.nth(j).innerText()));
+      leftVals.push(cleanText(await left.nth(j).innerText().catch(() => "")));
     }
 
     for (let j = 0; j < rightCount; j++) {
-      rightVals.push(cleanText(await right.nth(j).innerText()));
+      rightVals.push(cleanText(await right.nth(j).innerText().catch(() => "")));
     }
 
     const booking = {
@@ -151,6 +176,8 @@ async function extractBookings(page, label, url) {
       type: rightVals[0] || null,
       status: rightVals[1] || null,
       attended: rightVals[2] || null,
+      raw_left: leftVals,
+      raw_right: rightVals,
     };
 
     if (booking.member_name_postcode) {
@@ -160,12 +187,18 @@ async function extractBookings(page, label, url) {
 
   log(`${label}: parsed = ${bookings.length}`);
 
+  if (bookings.length > 0) {
+    log(`${label}: first parsed booking`);
+    console.log(JSON.stringify(bookings[0], null, 2));
+  }
+
   await saveJson(`${label}.json`, bookings);
 
   return bookings;
 }
 
 async function main() {
+  log("main: starting");
   await ensureDir(OUTPUT_DIR);
 
   const browser = await chromium.launch({
@@ -173,8 +206,17 @@ async function main() {
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
   });
 
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    viewport: { width: 1400, height: 1200 },
+  });
   const page = await context.newPage();
+
+  page.on("response", (response) => {
+    const url = response.url();
+    if (url.includes("movegb.com")) {
+      log(`response ${response.status()} ${url}`);
+    }
+  });
 
   try {
     await login(page);
@@ -205,10 +247,14 @@ async function main() {
           type: b.type,
           status: b.status,
           attended: b.attended,
+          raw_row: b,
         };
       });
 
     const output = {
+      extracted_at: new Date().toISOString(),
+      upcoming_count: upcoming.length,
+      today_count: today.length,
       upcoming: normalize(upcoming, "upcoming"),
       today: normalize(today, "today"),
     };
@@ -218,6 +264,9 @@ async function main() {
     log(`Done: upcoming=${upcoming.length}, today=${today.length}`);
   } catch (err) {
     console.error("[movegb] ERROR:", err);
+    try {
+      await saveArtifacts(page, "99-error");
+    } catch {}
     process.exit(1);
   } finally {
     await browser.close();
