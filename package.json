@@ -9,8 +9,6 @@
     "node-fetch": "^3.3.2",
     "@aws-sdk/client-s3": "^3.540.0",
     "playwright": "^1.42.0",
-    "playwright-extra": "latest",
-    "puppeteer-extra-plugin-stealth": "latest",
     "csv-parser": "^3.0.0"
   }
 }
