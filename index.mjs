@@ -136,22 +136,31 @@ async function downloadToFile(url, token, destPath) {
   );
 }
 
-async function makeThumbnailJpg(inputMp4, outputJpg) {
-  await new Promise((resolve, reject) => {
-    ffmpeg(inputMp4)
-      .seekInput(600) // 10 minutes
-      .outputOptions([
-        "-frames:v 1",
-        "-vf scale=1280:-2",   // <-- bigger thumbnail (keeps aspect ratio)
-        "-q:v 3"               // JPEG quality (lower = better). Try 2-4.
-      ])
-      .output(outputJpg)
-      .on("end", resolve)
-      .on("error", reject)
-      .run();
-  });
-}
+async function tryMakeThumbnail(inputMp4, outputJpg) {
+  const seekTimes = [600, 300, 60, 5]; // 10 mins, 5 mins, 60 seconds, 5 seconds,
 
+  for (const seconds of seekTimes) {
+    try {
+      await new Promise((resolve, reject) => {
+        ffmpeg(inputMp4)
+          .seekInput(seconds)
+          .outputOptions([
+            "-frames:v 1",
+            "-vf scale=1280:-2:flags=lanczos",
+            "-q:v 3"
+          ])
+          .output(outputJpg)
+          .on("end", resolve)
+          .on("error", reject)
+          .run();
+      });
+
+      if (fs.existsSync(outputJpg)) return;
+    } catch {}
+  }
+
+  throw new Error("Failed to generate thumbnail at any fallback timestamp");
+}
 async function uploadToR2(key, filePath) {
   const body = fs.readFileSync(filePath);
   await s3.send(
@@ -204,7 +213,7 @@ async function run() {
       console.log("Processing", { meetingId: meetingIdRaw, safeId: id, topic: (m.topic || "").slice(0, 60) });
 
       await downloadToFile(file.download_url, token, mp4Path);
-      await makeThumbnailJpg(mp4Path, jpgPath);
+      await tryMakeThumbnail(mp4Path, jpgPath);
       await uploadToR2(key, jpgPath);
 
       console.log("✅ Uploaded", `${R2_PUBLIC_BASE}/${key}`);
