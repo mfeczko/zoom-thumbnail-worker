@@ -2,7 +2,7 @@ import { chromium } from "playwright";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-console.log("[movegb] VERSION 7 scraper starting");
+console.log("[movegb] VERSION 8 scraper starting");
 
 const MOVEGB_PIN = process.env.MOVEGB_RECEPTION_PIN;
 const MOVEGB_RECEPTION_LOGIN_URL =
@@ -16,7 +16,6 @@ const HEADLESS = process.env.HEADLESS !== "false";
 
 const OUTPUT_DIR = path.join(process.cwd(), "movegb-output");
 const NAV_TIMEOUT = 30000;
-const SHORT_TIMEOUT = 5000;
 const RETRY_DELAY_MS = 2500;
 
 if (!MOVEGB_PIN || !/^\d{4}$/.test(MOVEGB_PIN)) {
@@ -35,7 +34,6 @@ function cleanText(value) {
 
 function splitMember(value) {
   if (!value) return { member_name: null, postcode: null };
-
   const parts = value.split(",");
   return {
     member_name: parts[0]?.trim() || null,
@@ -53,7 +51,6 @@ function buildExternalKey(b) {
 function uniqBy(items, keyFn) {
   const seen = new Set();
   const out = [];
-
   for (const item of items) {
     const key = keyFn(item);
     if (!seen.has(key)) {
@@ -61,7 +58,6 @@ function uniqBy(items, keyFn) {
       out.push(item);
     }
   }
-
   return out;
 }
 
@@ -81,16 +77,12 @@ async function saveText(filename, text) {
   await fs.writeFile(path.join(OUTPUT_DIR, filename), text, "utf8");
 }
 
-async function saveScreenshot(page, filename) {
-  await page.screenshot({
-    path: path.join(OUTPUT_DIR, filename),
-    fullPage: true,
-  });
-}
-
 async function saveArtifacts(page, prefix) {
   await Promise.allSettled([
-    saveScreenshot(page, `${prefix}.png`),
+    page.screenshot({
+      path: path.join(OUTPUT_DIR, `${prefix}.png`),
+      fullPage: true,
+    }),
     fs.writeFile(
       path.join(OUTPUT_DIR, `${prefix}.html`),
       await page.content(),
@@ -105,46 +97,51 @@ async function wait(page, ms = 2000) {
   await page.waitForTimeout(ms);
 }
 
-async function withRetry(label, fn, attempts = 3) {
-  let lastErr;
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
 
+async function withRetry(label, fn, attempts = 2) {
+  let lastErr;
   for (let i = 1; i <= attempts; i++) {
     try {
       log(`${label}: attempt ${i}/${attempts}`);
       return await fn(i);
     } catch (err) {
       lastErr = err;
-      log(`${label}: failed attempt ${i}/${attempts}`, {
-        message: err?.message || String(err),
+      log(`${label}: failed`, {
+        attempt: i,
         name: err?.name || null,
+        message: err?.message || String(err),
       });
-
-      if (i < attempts) {
-        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
-      }
+      if (i < attempts) await sleep(RETRY_DELAY_MS);
     }
   }
-
   throw lastErr;
 }
 
 async function attachDebugListeners(page) {
-  page.on("console", (msg) => {
-    log(`browser console [${msg.type()}]: ${msg.text()}`);
+  page.on("response", (res) => {
+    const url = res.url();
+    const status = res.status();
+
+    if (
+      status >= 400 &&
+      (url.includes("movegb.com") || url.includes("challenges.cloudflare.com"))
+    ) {
+      log(`http ${status}: ${url}`);
+    }
+  });
+
+  page.on("requestfailed", (req) => {
+    const url = req.url();
+    if (url.includes("movegb.com") || url.includes("cloudflare.com")) {
+      log(`requestfailed: ${req.method()} ${url} ${req.failure()?.errorText || ""}`);
+    }
   });
 
   page.on("pageerror", (err) => {
     log(`pageerror: ${err.message}`);
-  });
-
-  page.on("requestfailed", (req) => {
-    log(`requestfailed: ${req.method()} ${req.url()} ${req.failure()?.errorText || ""}`);
-  });
-
-  page.on("response", (res) => {
-    if (res.status() >= 400) {
-      log(`http ${res.status()}: ${res.url()}`);
-    }
   });
 }
 
@@ -175,7 +172,7 @@ async function dumpDiagnostics(page, prefix) {
     )
     .catch(() => []);
 
-  const visibleText = await page
+  const bodyText = await page
     .locator("body")
     .innerText()
     .then((t) => t.slice(0, 5000))
@@ -186,51 +183,38 @@ async function dumpDiagnostics(page, prefix) {
     title: await page.title().catch(() => null),
     visibleInputs,
     visibleButtons,
-    visibleText,
+    bodyText,
     timestamp: new Date().toISOString(),
   });
 
   await saveArtifacts(page, prefix);
 }
 
-async function safeGoto(page, url, label) {
+async function goto(page, url, label) {
   log(`Opening ${label}: ${url}`);
-
-  await page.goto(url, {
+  const res = await page.goto(url, {
     waitUntil: "domcontentloaded",
     timeout: NAV_TIMEOUT,
   });
 
   await wait(page, 2500);
   await saveArtifacts(page, label);
+
+  return res;
 }
 
-async function isLoginPage(page) {
+async function looksBlocked(page) {
   const url = page.url().toLowerCase();
-
-  if (url.includes("/reception/13064") || url.includes("/reception/")) {
-    const bodyText = (await page.locator("body").innerText().catch(() => "")).toLowerCase();
-
-    if (
-      bodyText.includes("pin") ||
-      bodyText.includes("enter pin") ||
-      bodyText.includes("login") ||
-      bodyText.includes("log in")
-    ) {
-      return true;
-    }
-  }
-
-  const inputCount = await page.locator("input:visible").count().catch(() => 0);
-  return inputCount > 0 && !page.url().includes("/reception/new/bookings");
-}
-
-async function isBookingsPage(page) {
-  const url = page.url().toLowerCase();
-  if (url.includes("/reception/new/bookings")) return true;
-
   const bodyText = (await page.locator("body").innerText().catch(() => "")).toLowerCase();
-  return bodyText.includes("bookings");
+
+  return (
+    url.includes("challenges.cloudflare.com") ||
+    bodyText.includes("attention required") ||
+    bodyText.includes("verify you are human") ||
+    bodyText.includes("cloudflare") ||
+    bodyText.includes("access denied") ||
+    bodyText.includes("forbidden")
+  );
 }
 
 async function findPinStrategy(page) {
@@ -246,7 +230,6 @@ async function findPinStrategy(page) {
 
   for (const selector of selectors) {
     const loc = page.locator(selector).first();
-
     try {
       await loc.waitFor({ state: "visible", timeout: 2500 });
       return { kind: "single", locator: loc, selector };
@@ -307,10 +290,27 @@ async function submitLogin(page) {
   return "enter";
 }
 
+async function isBookingsPage(page) {
+  const url = page.url().toLowerCase();
+  if (url.includes("/reception/new/bookings")) return true;
+
+  const bodyText = (await page.locator("body").innerText().catch(() => "")).toLowerCase();
+  return bodyText.includes("bookings");
+}
+
 async function login(page) {
   await withRetry("login", async () => {
-    await safeGoto(page, "https://www.movegb.com/logout", "00-logout");
-    await safeGoto(page, MOVEGB_RECEPTION_LOGIN_URL, "01-login");
+    const res = await goto(page, MOVEGB_RECEPTION_LOGIN_URL, "01-login");
+
+    if (res && res.status() >= 400) {
+      await dumpDiagnostics(page, "login-http-error");
+      throw new Error(`Login page returned HTTP ${res.status()}`);
+    }
+
+    if (await looksBlocked(page)) {
+      await dumpDiagnostics(page, "login-blocked");
+      throw new Error("Blocked by Cloudflare or access denied before PIN input rendered");
+    }
 
     const strategy = await findPinStrategy(page);
 
@@ -342,36 +342,41 @@ async function login(page) {
     await wait(page, 3000);
     await saveArtifacts(page, "02-after-login");
 
-    if (await isLoginPage(page)) {
-      await dumpDiagnostics(page, "login-still-on-login");
-      throw new Error("Login submitted but still appears to be on login page");
+    if (await looksBlocked(page)) {
+      await dumpDiagnostics(page, "after-login-blocked");
+      throw new Error("Blocked by Cloudflare after submitting PIN");
     }
-
-    log(`After login URL: ${page.url()}`);
   });
 }
 
 async function ensureAuthenticated(page) {
-  if (await isLoginPage(page)) {
-    log("Detected login page; re-authenticating");
-    await login(page);
+  if (!(await isBookingsPage(page))) {
+    const maybeBody = (await page.locator("body").innerText().catch(() => "")).toLowerCase();
+    if (maybeBody.includes("pin") || maybeBody.includes("login") || maybeBody.includes("log in")) {
+      await login(page);
+    }
   }
 }
 
 async function openBookingsPage(page, label, url) {
   await withRetry(`open-${label}`, async () => {
     await ensureAuthenticated(page);
-    await safeGoto(page, url, label);
 
-    if (await isLoginPage(page)) {
-      log(`${label}: got bounced to login; retrying auth`);
-      await login(page);
-      await safeGoto(page, url, `${label}-after-relogin`);
+    const res = await goto(page, url, label);
+
+    if (res && res.status() >= 400) {
+      await dumpDiagnostics(page, `${label}-http-error`);
+      throw new Error(`${label} returned HTTP ${res.status()}`);
+    }
+
+    if (await looksBlocked(page)) {
+      await dumpDiagnostics(page, `${label}-blocked`);
+      throw new Error(`${label} blocked by Cloudflare/access denied`);
     }
 
     if (!(await isBookingsPage(page))) {
       await dumpDiagnostics(page, `${label}-not-bookings`);
-      throw new Error(`${label}: page did not look like bookings page`);
+      throw new Error(`${label} did not look like a bookings page`);
     }
   });
 }
@@ -390,21 +395,17 @@ async function extractBookings(page, label, url) {
 
   for (let i = 0; i < count; i++) {
     const row = rows.nth(i);
-
     const left = row.locator("> div.col8.hide-mobile > div");
     const right = row.locator("> div.col4.hide-mobile > div");
-
-    const leftCount = await left.count();
-    const rightCount = await right.count();
 
     const leftVals = [];
     const rightVals = [];
 
-    for (let j = 0; j < leftCount; j++) {
+    for (let j = 0; j < await left.count(); j++) {
       leftVals.push(cleanText(await left.nth(j).innerText().catch(() => "")));
     }
 
-    for (let j = 0; j < rightCount; j++) {
+    for (let j = 0; j < await right.count(); j++) {
       rightVals.push(cleanText(await right.nth(j).innerText().catch(() => "")));
     }
 
@@ -424,13 +425,7 @@ async function extractBookings(page, label, url) {
     }
   }
 
-  log(`${label}: parsed = ${bookings.length}`);
   await saveJson(`${label}.json`, bookings);
-
-  if (count > 0 && bookings.length === 0) {
-    await dumpDiagnostics(page, `${label}-rows-but-no-parsed-bookings`);
-  }
-
   return bookings;
 }
 
@@ -440,27 +435,22 @@ async function uploadToLovable(payload) {
     return;
   }
 
-  await withRetry("upload-to-lovable", async () => {
-    log("Sending data to Lovable...");
-
-    const res = await fetch(MOVEGB_INGEST_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${MOVEGB_INGEST_SECRET}`,
-      },
-      body: JSON.stringify(payload),
-    });
-
-    const text = await res.text();
-
-    log(`Lovable response status: ${res.status}`);
-    log(`Lovable response: ${text}`);
-
-    if (!res.ok) {
-      throw new Error(`Lovable upload failed with status ${res.status}`);
-    }
+  const res = await fetch(MOVEGB_INGEST_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${MOVEGB_INGEST_SECRET}`,
+    },
+    body: JSON.stringify(payload),
   });
+
+  const text = await res.text();
+  log(`Lovable response status: ${res.status}`);
+  log(`Lovable response: ${text}`);
+
+  if (!res.ok) {
+    throw new Error(`Lovable upload failed with status ${res.status}`);
+  }
 }
 
 async function main() {
@@ -468,11 +458,19 @@ async function main() {
 
   const browser = await chromium.launch({
     headless: HEADLESS,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    args: [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-blink-features=AutomationControlled",
+    ],
   });
 
   const context = await browser.newContext({
     viewport: { width: 1400, height: 1200 },
+    userAgent:
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    locale: "en-GB",
+    timezoneId: "Europe/London",
   });
 
   const page = await context.newPage();
@@ -525,7 +523,6 @@ async function main() {
     };
 
     await saveJson("06-summary.json", summary);
-
     log(`Total bookings: ${allBookings.length}`);
 
     await uploadToLovable({
